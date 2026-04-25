@@ -8,35 +8,63 @@ import (
 	"sync"
 )
 
+const (
+	initQueueSize = 16
+	growFactor    = 2
+)
+
 // Queue - это структура данных для хранения элементов очереди.
 type Queue struct {
 	sync.Mutex
-	items []string
+	buf   []string
+	head  int
+	tail  int
+	count int
 }
 
 // NewQueue создает и возвращает новую очередь.
 func NewQueue() *Queue {
 	return &Queue{
-		items: make([]string, 0),
+		buf: make([]string, initQueueSize),
 	}
+}
+
+// Увеличиваем размер буфера и перекидываем туда эл-ты.
+func (q *Queue) grow() {
+	newBuf := make([]string, len(q.buf)*growFactor)
+	for i := 0; i < q.count; i++ {
+		newBuf[i] = q.buf[(q.head+i)%len(q.buf)]
+	}
+	q.buf = newBuf
+	q.head = 0
+	q.tail = q.count
 }
 
 // Push добавляет элемент в очередь.
 func (q *Queue) Push(msg string) {
 	q.Lock()
 	defer q.Unlock()
-	q.items = append(q.items, msg)
+
+	// Увеличиваем размер буфера, если он заполнен
+	if q.count == len(q.buf) {
+		q.grow()
+	}
+
+	q.buf[q.tail] = msg
+	q.tail = (q.tail + 1) % len(q.buf)
+	q.count++
 }
 
 // Pop удаляет и возвращает первый элемент из очереди. Если очередь пуста, возвращает пустую строку.
 func (q *Queue) Pop() string {
 	q.Lock()
 	defer q.Unlock()
-	if len(q.items) == 0 {
+	if q.count == 0 {
 		return ""
 	}
-	msg := q.items[0]
-	q.items = q.items[1:]
+	msg := q.buf[q.head]
+	q.head = (q.head + 1) % len(q.buf)
+	q.count--
 	return msg
 }
 
