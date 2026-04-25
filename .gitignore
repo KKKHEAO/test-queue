@@ -1,0 +1,49 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build outputs
+*.test
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories (если используешь GOPATH)
+vendor/
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment files
+.env
+
+# Coverage reports
+coverage.out
+
+*.coverprofile
+
+# Generated files
+*.gen.go
+
+# Temporary files
+tmp/
+temp/
+
+# Binary output folders
+bin/
+dist/
+build/
