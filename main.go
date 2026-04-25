@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -16,16 +18,18 @@ const (
 // Queue - это структура данных для хранения элементов очереди.
 type Queue struct {
 	sync.Mutex
-	buf   []string
-	head  int
-	tail  int
-	count int
+	buf     []string
+	head    int
+	tail    int
+	count   int
+	waiters []chan string // Каналы для ожидания сообщений, если очередь пуста
 }
 
 // NewQueue создает и возвращает новую очередь.
 func NewQueue() *Queue {
 	return &Queue{
-		buf: make([]string, initQueueSize),
+		buf:     make([]string, initQueueSize),
+		waiters: make([]chan string, 0),
 	}
 }
 
@@ -45,6 +49,15 @@ func (q *Queue) Push(msg string) {
 	q.Lock()
 	defer q.Unlock()
 
+	// Если есть ожидающие, значит буфер пуст и можно отдавать сразу, не добавляя в буфер
+	if len(q.waiters) > 0 {
+		ch := q.waiters[0]
+		// Тут явно интерфейс очереди юзается и надо бы переиспользовать нашу очередь
+		q.waiters = q.waiters[1:]
+		ch <- msg
+		return
+	}
+
 	// Увеличиваем размер буфера, если он заполнен
 	if q.count == len(q.buf) {
 		q.grow()
@@ -55,17 +68,55 @@ func (q *Queue) Push(msg string) {
 	q.count++
 }
 
-// Pop удаляет и возвращает первый элемент из очереди. Если очередь пуста, возвращает пустую строку.
-func (q *Queue) Pop() string {
+// PopTimeout удаляет и возвращает первый элемент из очереди.
+// Если очередь пуста, то ждет таймаут и возвращает пустую строку.
+func (q *Queue) PopTimeout(timeout time.Duration) string {
 	q.Lock()
-	defer q.Unlock()
-	if q.count == 0 {
+
+	// В буфере есть элементы, можно сразу вернуть
+	if q.count > 0 {
+		msg := q.buf[q.head]
+		q.head = (q.head + 1) % len(q.buf)
+		q.count--
+		q.Unlock()
+		return msg
+	}
+	// При нулевом таймауте возвращаем пустую строку
+	if timeout == 0 {
+		q.Unlock()
 		return ""
 	}
-	msg := q.buf[q.head]
-	q.head = (q.head + 1) % len(q.buf)
-	q.count--
-	return msg
+
+	// Если буфер пуст, то создаем канал для ожидания и добавляем его в список ожидания
+	// Если будет время перепишу на очередь
+	ch := make(chan string, 1)
+	q.waiters = append(q.waiters, ch)
+	q.Unlock()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	// Есть сообщение из канала, до таймаута
+	case msg := <-ch:
+		return msg
+	// Таймаут истек
+	case <-timer.C:
+		q.Lock()
+		for i, w := range q.waiters {
+			if w == ch {
+				q.waiters = append(q.waiters[:i], q.waiters[i+1:]...)
+				break
+			}
+		}
+		q.Unlock()
+		select {
+		case msg := <-ch:
+			return msg
+		default:
+			return ""
+		}
+	}
 }
 
 // Храним доступные очереди.
@@ -119,7 +170,13 @@ func handler(w http.ResponseWriter, r *http.Request, qM *QueuesMap) {
 		q.Push(msg)
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet:
-		msg := q.Pop()
+		timeout := 0
+		// Получаем таймаут из query параметров, если он есть
+		if t := r.URL.Query().Get("timeout"); t != "" {
+			timeout, _ = strconv.Atoi(t)
+		}
+
+		msg := q.PopTimeout(time.Duration(timeout) * time.Second)
 		if msg == "" {
 			// Если очередь пуста, то возвращаем 404
 			w.WriteHeader(http.StatusNotFound)
