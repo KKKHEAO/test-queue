@@ -33,7 +33,7 @@ func NewQueue() *Queue {
 	}
 }
 
-// Увеличиваем размер буфера и перекидываем туда эл-ты.
+// grow увеличивает размер буфера очереди, когда он заполнен.
 func (q *Queue) grow() {
 	newBuf := make([]string, len(q.buf)*growFactor)
 	for i := 0; i < q.count; i++ {
@@ -47,13 +47,12 @@ func (q *Queue) grow() {
 // Push добавляет элемент в очередь.
 func (q *Queue) Push(msg string) {
 	q.Lock()
-	defer q.Unlock()
 
-	// Если есть ожидающие, значит буфер пуст и можно отдавать сразу, не добавляя в буфер
+	// Если есть ожидающие, значит буфер пуст — отдаём сразу
 	if len(q.waiters) > 0 {
 		ch := q.waiters[0]
-		// Тут явно интерфейс очереди юзается и надо бы переиспользовать нашу очередь
 		q.waiters = q.waiters[1:]
+		q.Unlock()
 		ch <- msg
 		return
 	}
@@ -66,10 +65,11 @@ func (q *Queue) Push(msg string) {
 	q.buf[q.tail] = msg
 	q.tail = (q.tail + 1) % len(q.buf)
 	q.count++
+	q.Unlock()
 }
 
 // PopTimeout удаляет и возвращает первый элемент из очереди.
-// Если очередь пуста, то ждет таймаут и возвращает пустую строку.
+// Если очередь пуста, то ждёт таймаут и возвращает пустую строку.
 func (q *Queue) PopTimeout(timeout time.Duration) string {
 	q.Lock()
 
@@ -87,8 +87,7 @@ func (q *Queue) PopTimeout(timeout time.Duration) string {
 		return ""
 	}
 
-	// Если буфер пуст, то создаем канал для ожидания и добавляем его в список ожидания
-	// Если будет время перепишу на очередь
+	// Если буфер пуст, регистрируем канал ожидания
 	ch := make(chan string, 1)
 	q.waiters = append(q.waiters, ch)
 	q.Unlock()
@@ -97,12 +96,14 @@ func (q *Queue) PopTimeout(timeout time.Duration) string {
 	defer timer.Stop()
 
 	select {
-	// Есть сообщение из канала, до таймаута
 	case msg := <-ch:
+		// Push уже отправил сообщение и удалил канал из waiters.
+		// Просто возвращаем сообщение.
 		return msg
-	// Таймаут истек
 	case <-timer.C:
 		q.Lock()
+		// Пытаемся удалить канал из waiters.
+		// Если Push уже успел его забрать — не найдём, и это ок.
 		for i, w := range q.waiters {
 			if w == ch {
 				q.waiters = append(q.waiters[:i], q.waiters[i+1:]...)
@@ -110,6 +111,8 @@ func (q *Queue) PopTimeout(timeout time.Duration) string {
 			}
 		}
 		q.Unlock()
+
+		// Push мог уже отправить сообщение, но мы не успели его прочитать.
 		select {
 		case msg := <-ch:
 			return msg
